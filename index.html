@@ -25,7 +25,7 @@
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
 html,body{height:100%;margin:0;overflow:hidden;overscroll-behavior:none}
 body{background:var(--world);color:var(--ink);font-family:'Nunito',system-ui,-apple-system,'Segoe UI',sans-serif;font-weight:800;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-#game{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#game{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab;background:linear-gradient(var(--world),var(--world-deep))}
 .d{font-family:'Lilita One','Trebuchet MS',system-ui,sans-serif;font-weight:400;letter-spacing:.3px}
 button{font:inherit;color:inherit;touch-action:manipulation;cursor:pointer;border:none;background:none;padding:0}
 button:focus-visible{outline:3px solid #ffe07a;outline-offset:2px}
@@ -991,6 +991,22 @@ function drawCavalier(tr){
   shieldIcon(rx-dir*r*0.05,ry+r*0.28,r*0.34,'#f4f1e8','#c0392b');
 }
 const TROOP_BODY={footman:'#f4f1e8',spearman:'#7d8594',crossbow:'#8a6a45',longbow:'#6b5236',knight:'#c9ccd4',templar:'#f4f1e8',paladin:'#e7c55c'};
+// soldiers and raiders are drawn from a shared picture cache (per type, facing, pose)
+const FIG=new Map();
+function drawFigure(o,isTroop){
+  if(g!==ctx||PICK)return isTroop?drawTroop(o):drawUnit(o);
+  const r=o.def.size,qs=qScale(cam.z*DPR),k=isTroop?(o.type==='cavalier'?13:10):11;
+  const wf=o.moving?Math.floor(((((o.walk||0)*k)/TAU)%1)*8):-1,sf=o.swing>0?Math.ceil(o.swing/0.05):0,fl=o.hitFlash>0?1:0;
+  const key=(isTroop?'t':'u')+o.type+'|'+(o.tl||1)+'|'+o.dir+'|'+wf+'|'+sf+'|'+fl+'|'+qs;
+  const bx0=-r*4.6,by0=-r*5.4;let e=FIG.get(key);
+  if(!e){if(FIG.size>900)FIG.clear();
+    const c=document.createElement('canvas');c.width=Math.ceil(r*9.2*qs)+2;c.height=Math.ceil(r*6.8*qs)+2;
+    const x=c.getContext('2d');x.setTransform(qs,0,0,qs,-bx0*qs,-by0*qs);
+    const f=Object.assign({},o,{x:0,y:0,ox:0,oy:0,moving:wf>=0,walk:wf<0?0:(wf+0.5)/8*TAU/k,swing:sf?sf*0.05:0,hitFlash:fl?0.1:0});
+    const prev=g;g=x;if(isTroop)drawTroop(f);else drawUnit(f);g=prev;e={c,qs};FIG.set(key,e);}
+  const p=P(o.x+(o.ox||0),o.y+(o.oy||0));
+  g.drawImage(e.c,p[0]+bx0,p[1]+by0,e.c.width/e.qs,e.c.height/e.qs);
+}
 function drawTroop(tr){
   if(tr.type==='cavalier')return drawCavalier(tr);
   const d=tr.def,p=P(tr.x,tr.y),sx=p[0],sy=p[1],r=d.size,dir=tr.dir,fl=tr.hitFlash>0;
@@ -1753,9 +1769,24 @@ function unqueue(t){
 
 // ================= camera + resize =================
 let minZ=0.2,maxZ=2.2;
-function resize(){
-  W=innerWidth;H=innerHeight;DPR=Math.min(2,devicePixelRatio||1);if(W*H*DPR*DPR>4.2e6)DPR=Math.max(1,Math.sqrt(4.2e6/(W*H)));
+// render scale drops automatically if frames get slow, and comes back when they're quick again
+let RS=1,lowGfx=(()=>{try{return localStorage.getItem('bulwark-gfx')==='fast';}catch(e){return false;}})();
+function applyRes(){
+  let d=Math.min(2,devicePixelRatio||1);if(W*H*d*d>4.2e6)d=Math.max(1,Math.sqrt(4.2e6/(W*H)));
+  DPR=Math.max(0.5,d*RS*(lowGfx?0.7:1));
   cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);layer.width=cv.width;layer.height=cv.height;
+}
+let ftAvg=16,ftCheck=0,ftGood=0,fpsShow=0,fpsN=0,fpsT=0;
+function perfTick(fd){
+  if(fd>250)return;ftAvg=ftAvg*0.92+fd*0.08;fpsN++;
+  if(now-fpsT>1000){fpsShow=Math.round(fpsN*1000/(now-fpsT));fpsN=0;fpsT=now;}
+  ftCheck+=fd;if(ftCheck<1200)return;ftCheck=0;
+  if(ftAvg>26&&RS>0.6){RS=Math.round((RS-0.1)*10)/10;ftGood=0;applyRes();}
+  else if(ftAvg<17.5&&RS<1){if(++ftGood>=3){RS=Math.round((RS+0.1)*10)/10;ftGood=0;applyRes();}}
+  else ftGood=0;
+}
+function resize(){
+  W=innerWidth;H=innerHeight;applyRes();
   minZ=Math.min(W/(N*2*HW),H/(N*2*HH))*0.95;maxZ=2.2;cam.z=clamp(cam.z,minZ,maxZ);clampCam();
 }
 function clampCam(){const hw=N*HW*cam.z,hz=N*2*HH*cam.z;cam.x=clamp(cam.x,W*0.25-hw,W*0.75+hw);cam.y=clamp(cam.y,H*0.3-hz,H*0.7+60*cam.z);}
@@ -1786,7 +1817,7 @@ function drawGround(){
 const gCache={c:document.createElement('canvas'),key:''};
 function drawGroundLayer(){
   const sc=cam.z*DPR;
-  if(sc>1.25){drawGround();for(const b of S.b)if(!b.dead)pad(b);return;}
+  if(sc>1.42){drawGround();for(const b of S.b)if(!b.dead)pad(b);return;}
   const qs=qScale(sc),x0=-N*HW-40,y0=-20,x1=N*HW+40,y1=N*2*HH+70;
   let sig=qs+'|';for(const b of S.b)if(!b.dead&&TYPES[b.t].cat!=='wall'&&TYPES[b.t].cat!=='trap')sig+=b.id+':'+b.x+','+b.y+','+b.lvl+';';
   const G=gCache;
@@ -1810,10 +1841,9 @@ function rangeRing(b){
 // ================= render =================
 function render(){
   ctx.setTransform(1,0,0,1,0,0);
-  const gr=ctx.createLinearGradient(0,0,0,cv.height);gr.addColorStop(0,worldBg);gr.addColorStop(1,shade(worldBg.length===7?worldBg:'#2f7f90',-0.25));
-  ctx.fillStyle=gr;ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.clearRect(0,0,cv.width,cv.height);
   g=ctx;ctx.setTransform(DPR*cam.z,0,0,DPR*cam.z,DPR*cam.x,DPR*cam.y);
-  drawGroundLayer();sprBudget=10;
+  drawGroundLayer();sprBudget=lowGfx?4:10;
   const editing=!!placing||(gesture&&gesture.type==='move');
   if(editing)drawGridLines();
   if(selected&&!selected.dead){const s=TYPES[selected.t].size,pulse=0.55+Math.sin(tSec*5)*0.25;
@@ -1836,7 +1866,7 @@ function render(){
   const fade=fadeSet(mv);
   const vx0=-cam.x/cam.z-60,vy0=-cam.y/cam.z-60,vx1=(W-cam.x)/cam.z+60,vy1=(H-cam.y)/cam.z+60;
   const onScreen=o=>{if(o[2]){const p=P(o[3].x,o[3].y);return p[0]>vx0&&p[0]<vx1&&p[1]>vy0&&p[1]<vy1+60;}const bx=sprBox(o[3]);return bx[2]>vx0&&bx[0]<vx1&&bx[3]>vy0&&bx[1]<vy1;};
-  for(const o of objs){if(!onScreen(o))continue;if(o[2]===1)drawUnit(o[3]);else if(o[2]===2)drawTroop(o[3]);else if(fade.has(o[3]))drawFaded(o[3],0.3);else drawBuilding(o[3]);}
+  for(const o of objs){if(!onScreen(o))continue;if(o[2]===1)drawFigure(o[3],false);else if(o[2]===2)drawFigure(o[3],true);else if(fade.has(o[3]))drawFaded(o[3],0.3);else drawBuilding(o[3]);}
   if(selected&&!selected.dead&&selected!==mv&&[...fade].some(f=>hides(f,selected))){const s=TYPES[selected.t].size;footprint(selected.x,selected.y,s,null,`rgba(255,255,255,${0.6+Math.sin(tSec*5)*0.3})`,3/cam.z);}
   if(selected&&!selected.dead&&TYPES[selected.t].range)rangeRing(selected);
   if(ghost&&TYPES[ghost.t].range)rangeRing(ghost);
@@ -1898,6 +1928,7 @@ function overlay(){
     for(let i=0;i<3;i++){const a=tSec*6+i*TAU/3;g.fillStyle='#ffe27a';g.beginPath();g.arc(sx+Math.cos(a)*9,sy+Math.sin(a)*3,2.4,0,TAU);g.fill();}}
   if(raid)for(const u of raid.units){if(u.hp>=u.maxHp)continue;const [sx,sy]=sc(u.x+u.ox,u.y+u.oy,u.def.size*2.6+8),w=22,fr=clamp(u.hp/u.maxHp,0,1);
     g.fillStyle='rgba(12,6,20,.8)';g.fillRect(sx-w/2,sy,w,5);g.fillStyle='#ff6a4d';g.fillRect(sx-w/2+1,sy+1,(w-2)*fr,3);}
+  if(DEV.on&&DEV.fps){g.font='13px system-ui';g.textAlign='left';const t=`${fpsShow} fps · ${ftAvg.toFixed(1)} ms · res ${DPR.toFixed(2)}${lowGfx?' · fast':''}`;g.fillStyle='rgba(0,0,0,.6)';g.fillRect(8,H-30,g.measureText(t).width+12,22);g.fillStyle='#9ff07a';g.fillText(t,14,H-14);}
   for(const f of floats){const [sx,sy]=sc(f.x,f.y,f.z),p=f.t/f.T;g.globalAlpha=p>0.7?1-(p-0.7)/0.3:1;sText(f.text,sx,sy-p*34,f.size||17,f.color);}
   g.globalAlpha=1;
 }
@@ -2334,12 +2365,14 @@ $('menuBtn').addEventListener('click',()=>{
     <div class="tips" style="gap:10px">
       <button class="btn blue" data-m="center">Recenter view</button>
       <button class="btn plain" data-m="help">How to play</button>
+      <button class="btn plain" data-m="gfx">Fast graphics<small>${lowGfx?'On: smoother on slower devices':'Off'}</small></button>
       <button class="btn plain" data-m="rreset">Reset raid levels</button>
       <button class="btn red" data-m="reset">Reset base</button>
       ${DEV.on?'<button class="btn plain" data-m="dev">Developer tools</button>':''}
       <button class="btn" data-m="close">Close</button></div>
-    <p class="ver" data-m="ver">Bulwark v1.8</p>`,{
-    center:()=>{centerCam();hideModal();},help:()=>showWelcome(),close:hideModal,dev:()=>showDevTools(),
+    <p class="ver" data-m="ver">Bulwark v1.9</p>`,{
+    center:()=>{centerCam();hideModal();},help:()=>showWelcome(),close:hideModal,
+    gfx:(el)=>{lowGfx=!lowGfx;try{localStorage.setItem('bulwark-gfx',lowGfx?'fast':'sharp');}catch(e){}applyRes();el.innerHTML=`Fast graphics<small>${lowGfx?'On: smoother on slower devices':'Off'}</small>`;},dev:()=>showDevTools(),
     ver:()=>{const t=performance.now();if(t-verT>4000)verTaps=0;verT=t;verTaps++;if(verTaps>=7){verTaps=0;DEV.on?showDevTools():showDevUnlock();}},
     rreset:(el)=>{if(el.dataset.armed){S.raidMax=1;S.raidLvl=1;save();hideModal();toast('Raid levels reset to 1');}else{el.dataset.armed='1';el.innerHTML='Tap again to go back to raid Lv 1';}},
     reset:(el)=>{if(el.dataset.armed){cancelPlace();select(null);newGame();troops=[];S.b.forEach(initRt);rebuildOcc();syncTroops();centerCam();save();hideModal();toast('Base reset');}
@@ -2428,7 +2461,7 @@ function drawCommandMarks(){
 
 // ================= developer tools (unlocked with a passcode, saved only on this device) =================
 const DEV_KEY='bulwark-dev',DEV_HASH='f6342118d77c2e8380e8d523e8f6f23aea3408c3e3bf7ad456ff235aeffcaa00',DEV_INF=999999999;
-const DEV=(()=>{try{return Object.assign({on:false,inf:false,fast:false},JSON.parse(localStorage.getItem(DEV_KEY)||'{}'));}catch(e){return{on:false,inf:false,fast:false};}})();
+const DEV=(()=>{try{return Object.assign({on:false,inf:false,fast:false,fps:false},JSON.parse(localStorage.getItem(DEV_KEY)||'{}'));}catch(e){return{on:false,inf:false,fast:false};}})();
 const devInf=()=>DEV.on&&DEV.inf,devFast=()=>DEV.on&&DEV.fast;
 function devSave(){try{localStorage.setItem(DEV_KEY,JSON.stringify(DEV));}catch(e){}$('devTag').hidden=!DEV.on;}
 async function sha256(t){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -2452,12 +2485,14 @@ function showDevTools(){
     <div class="tips" style="gap:10px">
       ${tg('inf','Infinite resources',DEV.inf)}
       ${tg('fast','Instant builds, upgrades & training',DEV.fast)}
+      ${tg('fps','Show frame rate',DEV.fps)}
       <button class="btn blue" data-m="raids">Unlock all raid levels</button>
       <button class="btn red" data-m="lock">Turn off developer mode</button>
       <button class="btn plain" data-m="close">Close</button></div>`,{
     close:hideModal,
     inf:()=>{DEV.inf=!DEV.inf;if(!DEV.inf){S.gold=cap('gold');S.crystal=cap('crystal');}devSave();saveSoon();showDevTools();},
     fast:()=>{DEV.fast=!DEV.fast;devSave();showDevTools();},
+    fps:()=>{DEV.fps=!DEV.fps;devSave();showDevTools();},
     raids:()=>{S.raidMax=150;saveSoon();toast('All raid levels unlocked');},
     lock:()=>{if(DEV.inf){S.gold=cap('gold');S.crystal=cap('crystal');}DEV.on=false;DEV.inf=false;DEV.fast=false;devSave();saveSoon();hideModal();toast('Developer mode off');}});
 }
@@ -2465,7 +2500,7 @@ let verTaps=0,verT=0;
 // ================= loop =================
 let lastT=performance.now(),uiAcc=0,saveAcc=0;
 function frame(t){
-  const dt=Math.min(0.05,(t-lastT)/1000);lastT=t;tSec+=dt;now=Date.now();
+  const fd=t-lastT,dt=Math.min(0.05,fd/1000);lastT=t;tSec+=dt;now=Date.now();perfTick(fd);
   devTick();economy(dt);processTraining();processResearch();
   if(raid&&!raid.ended)raidUpdate(dt);else if(!raid)updateIdleTroops(dt);
   updateFx(dt);
